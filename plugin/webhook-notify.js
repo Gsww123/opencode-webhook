@@ -410,6 +410,7 @@ export const WatchNotificationPlugin = async ({ project, client, $, directory, w
         const res = await client.session.get({ path: { id: sessionID }, query: { directory } })
         const s = res.data ?? res
         if (s?.title === iosTitle) return
+        if (s?.parentID) return  /* 子代理 session 有 parentID，跳过通知，只由主 agent 触发 */
         title = formatTaskTitle(s?.title, label)
         if (s?.createdAt && s?.updatedAt) {
           runtime = formatRuntime(new Date(s.createdAt).getTime(), new Date(s.updatedAt).getTime())
