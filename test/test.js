@@ -55,7 +55,7 @@ const mockClient = {
     },
   },
   session: {
-    get: async () => ({ data: { title: "测试会话", createdAt: "2026-06-30T10:00:00.000Z", updatedAt: "2026-06-30T10:05:30.000Z" } }),
+    get: async () => ({ data: { title: "测试会话", createdAt: "2026-06-30T10:00:00.000Z", updatedAt: "2026-06-30T10:05:30.000Z", model: { id: "gpt-4o", providerID: "openai" } } }),
   },
 }
 
@@ -86,7 +86,7 @@ async function runTest(name, fn) {
 // ========== 测试用例 ==========
 
 async function testPluginInit() {
-  const mod = await import("../plugin/watch-notify.js")
+  const mod = await import("../plugin/webhook-notify.js")
   const plugin = await mod.WatchNotificationPlugin({
     project: { name: "test" },
     client: mockClient,
@@ -100,7 +100,7 @@ async function testPluginInit() {
 }
 
 async function testPermissionEvent() {
-  const mod = await import("../plugin/watch-notify.js")
+  const mod = await import("../plugin/webhook-notify.js")
   const plugin = await mod.WatchNotificationPlugin({
     project: { name: "test" },
     client: mockClient,
@@ -117,7 +117,7 @@ async function testPermissionEvent() {
 }
 
 async function testIdleEvent() {
-  const mod = await import("../plugin/watch-notify.js")
+  const mod = await import("../plugin/webhook-notify.js")
   const plugin = await mod.WatchNotificationPlugin({
     project: { name: "test" },
     client: mockClient,
@@ -131,7 +131,7 @@ async function testIdleEvent() {
 }
 
 async function testDedup() {
-  const mod = await import("../plugin/watch-notify.js")
+  const mod = await import("../plugin/webhook-notify.js")
   const plugin = await mod.WatchNotificationPlugin({
     project: { name: "test" },
     client: mockClient,
@@ -149,7 +149,7 @@ async function testDedup() {
 }
 
 async function testPermissionDedup() {
-  const mod = await import("../plugin/watch-notify.js")
+  const mod = await import("../plugin/webhook-notify.js")
   const plugin = await mod.WatchNotificationPlugin({
     project: { name: "test" },
     client: mockClient,
@@ -172,7 +172,7 @@ async function testPermissionDedup() {
 
 async function testTaskCompleteCopy() {
   await withConfig({ cmd: "echo \"$TITLE\n$DETAILS\"" }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const $ = mockShell()
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" },
@@ -185,17 +185,146 @@ async function testTaskCompleteCopy() {
       event: { type: "session.idle", properties: { sessionID: "copy-task" } },
     })
     const output = $.commands.join("\n")
-  if (!output.includes("Opencode 任务完成：测试会话")) throw new Error("任务完成标题不清晰")
-  if (!output.includes("状态：任务已完成，可以查看结果")) throw new Error("任务完成正文缺少状态说明")
-  if (output.includes("会话：")) throw new Error("任务完成正文不应显示会话信息")
-  if (output.includes("终端：")) throw new Error("任务完成正文不应显示终端信息")
-  if (!output.includes("运行时间：5分30秒")) throw new Error("任务完成正文缺少运行时间")
+    if (!output.includes("Opencode 任务完成")) throw new Error("任务完成标题不清晰")
+    if (!output.includes("项目：test-project")) throw new Error("任务完成正文项目路径应使用 basename")
+    if (!output.includes("会话：测试会话")) throw new Error("任务完成正文缺少会话名称")
+    if (!output.includes("模型：gpt-4o")) throw new Error("任务完成正文缺少模型信息")
+    if (output.includes("状态：")) throw new Error("任务完成正文不应包含冗余状态说明")
+    if (output.includes("终端：")) throw new Error("任务完成正文不应显示终端信息")
+    if (!output.includes("运行时间：5分30秒")) throw new Error("任务完成正文缺少运行时间")
+  })
+}
+
+async function testQuestionEvent() {
+  const mod = await import("../plugin/webhook-notify.js")
+  const plugin = await mod.WatchNotificationPlugin({
+    project: { name: "test" },
+    client: mockClient,
+    $: mockShell(),
+    directory: "/tmp/test-project",
+    worktree: "/tmp/test-project",
+  })
+  await plugin.event({
+    event: {
+      type: "question.asked",
+      properties: {
+        sessionID: "session-001",
+        questions: [{ question: "用哪个框架？", header: "选择框架", options: [{ label: "React", description: "" }, { label: "Vue", description: "" }, { label: "Svelte", description: "" }] }],
+      },
+    },
+  })
+}
+
+async function testQuestionCopy() {
+  await withConfig({ cmd: "echo \"$TITLE\n$DETAILS\"" }, async () => {
+    const mod = await import("../plugin/webhook-notify.js")
+    const $ = mockShell()
+    const plugin = await mod.WatchNotificationPlugin({
+      project: { name: "test" },
+      client: mockClient,
+      $,
+      directory: "/tmp/test-project",
+      worktree: "/tmp/test-project",
+    })
+    await plugin.event({
+      event: {
+        type: "question.asked",
+        properties: {
+          sessionID: "q-session",
+          questions: [{ question: "用哪个框架？", header: "选择框架", options: [{ label: "React", description: "" }, { label: "Vue", description: "" }, { label: "Svelte", description: "" }] }],
+        },
+      },
+    })
+    const output = $.commands.join("\n")
+    if (!output.includes("Opencode 需要你回答问题")) throw new Error("问题通知标题不清晰")
+    if (!output.includes("问题：用哪个框架？")) throw new Error("问题通知正文缺少问题内容")
+    if (!output.includes("选项：React / Vue / Svelte")) throw new Error("问题通知正文缺少选项信息")
+    if (!output.includes("项目：test-project")) throw new Error("问题通知正文缺少项目信息")
+    if (!output.includes("会话：测试会话")) throw new Error("问题通知正文应显示会话名称而非 ID")
+  })
+}
+
+async function testTurnDurationCollect() {
+  const mod = await import("../plugin/webhook-notify.js")
+  const plugin = await mod.WatchNotificationPlugin({
+    project: { name: "test" },
+    client: mockClient,
+    $: mockShell(),
+    directory: "/tmp/test-project",
+    worktree: "/tmp/test-project",
+  })
+  /* 发送 turn.duration 事件 */
+  await plugin.event({
+    event: { type: "turn.duration", properties: { sessionID: "turn-test", duration: 3000 } },
+  })
+  await plugin.event({
+    event: { type: "turn.duration", properties: { sessionID: "turn-test", duration: 5000 } },
+  })
+  /* turn.duration 事件不应触发推送，只存内部状态 */
+  /* 先验证 idle 不报错 */
+  await plugin.event({
+    event: { type: "session.idle", properties: { sessionID: "turn-test" } },
+  })
+}
+
+async function testShowStatsInIdle() {
+  await withConfig({ cmd: "echo \"$TITLE\n$DETAILS\"", showStats: true }, async () => {
+    const mod = await import("../plugin/webhook-notify.js")
+    const $ = mockShell()
+    const plugin = await mod.WatchNotificationPlugin({
+      project: { name: "test" },
+      client: mockClient,
+      $,
+      directory: "/tmp/test-project",
+      worktree: "/tmp/test-project",
+    })
+    /* 发送两轮耗时事件 */
+    await plugin.event({
+      event: { type: "turn.duration", properties: { sessionID: "stats-test", duration: 3000 } },
+    })
+    await plugin.event({
+      event: { type: "turn.duration", properties: { sessionID: "stats-test", duration: 5000 } },
+    })
+    await plugin.event({
+      event: { type: "session.idle", properties: { sessionID: "stats-test" } },
+    })
+    const output = $.commands.join("\n")
+    if (!output.includes("轮次统计：共2轮")) throw new Error("showStats 通知应包含轮次统计行")
+    if (!output.includes("第1轮：3.0s")) throw new Error("轮次统计应包含第1轮耗时")
+    if (!output.includes("第2轮：5.0s")) throw new Error("轮次统计应包含第2轮耗时")
+    if (!output.includes("总8.0s")) throw new Error("轮次统计应包含总耗时")
+    if (!output.includes("平均4.0s")) throw new Error("轮次统计应包含平均耗时")
+    if (!output.includes("最快3.0s")) throw new Error("轮次统计应包含最快耗时")
+    if (!output.includes("最慢5.0s")) throw new Error("轮次统计应包含最慢耗时")
+  })
+}
+
+async function testShowStatsDefaultFalse() {
+  await withConfig({ cmd: "echo \"$TITLE\n$DETAILS\"" }, async () => {
+    const mod = await import("../plugin/webhook-notify.js")
+    const $ = mockShell()
+    const plugin = await mod.WatchNotificationPlugin({
+      project: { name: "test" },
+      client: mockClient,
+      $,
+      directory: "/tmp/test-project",
+      worktree: "/tmp/test-project",
+    })
+    /* showStats 默认 false，即使有 turn.duration 事件也不应展示 */
+    await plugin.event({
+      event: { type: "turn.duration", properties: { sessionID: "no-stats", duration: 3000 } },
+    })
+    await plugin.event({
+      event: { type: "session.idle", properties: { sessionID: "no-stats" } },
+    })
+    const output = $.commands.join("\n")
+    if (output.includes("轮次统计")) throw new Error("showStats=false 时不应包含轮次统计")
   })
 }
 
 async function testPermissionCopy() {
   await withConfig({ cmd: "echo \"$TITLE\n$DETAILS\"" }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const $ = mockShell()
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" },
@@ -214,7 +343,39 @@ async function testPermissionCopy() {
     if (!output.includes("Opencode 需要你批准操作")) throw new Error("权限申请标题不清晰")
     if (!output.includes("权限：command.execute")) throw new Error("权限申请正文缺少权限类型")
     if (!output.includes("操作：git push origin main")) throw new Error("权限申请正文缺少操作说明")
-    if (!output.includes("会话：copy-session")) throw new Error("权限申请正文缺少会话信息")
+    if (!output.includes("会话：测试会话")) throw new Error("权限申请正文应显示会话名称而非 ID")
+  })
+}
+
+// ========== 自定义功能测试 ==========
+
+async function testCustomNickname() {
+  await withConfig({ cmd: "echo \"$TITLE\n$DETAILS\"", nickname: "主任", emojiPrefix: "🔔", signature: "—— 自动通知" }, async () => {
+    const mod = await import("../plugin/webhook-notify.js")
+    const $ = mockShell()
+    const plugin = await mod.WatchNotificationPlugin({
+      project: { name: "test" }, client: mockClient, $,
+      directory: "/tmp/test-project", worktree: "/tmp/test-project",
+    })
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "nickname-test" } } })
+    const output = $.commands.join("\n")
+    if (!output.includes("🔔 主任 Opencode 任务完成")) throw new Error("标题未拼接 nickname/emojiPrefix")
+    if (!output.includes("会话：测试会话")) throw new Error("详情中缺少会话名称")
+    if (!output.includes("项目：test-project")) throw new Error("详情中项目路径应使用 basename")
+    if (!output.includes("—— 自动通知")) throw new Error("详情末尾缺少 signature")
+  })
+}
+
+async function testIgnoreProjects() {
+  await withConfig({ cmd: "echo fired", ignoreProjects: ["test-project"] }, async () => {
+    const mod = await import("../plugin/webhook-notify.js")
+    const $ = mockShell()
+    const plugin = await mod.WatchNotificationPlugin({
+      project: { name: "test" }, client: mockClient, $,
+      directory: "/tmp/test-project", worktree: "/tmp/test-project",
+    })
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ignore-test" } } })
+    if ($.commands.length > 0) throw new Error("被 ignore 的项目不应触发通知")
   })
 }
 
@@ -222,7 +383,7 @@ async function testPermissionCopy() {
 
 async function testGotifyJsonConfig() {
   await withConfig({ gotify: { url: "http://gotify:8080", token: "abc", priority: 8 } }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" }, client: mockClient, $: mockShell(),
       directory: "/tmp/test", worktree: "/tmp/test",
@@ -233,7 +394,7 @@ async function testGotifyJsonConfig() {
 
 async function testDesktopJsonConfig() {
   await withConfig({ desktop: true }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const $ = mockShell()
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" }, client: mockClient, $,
@@ -247,7 +408,7 @@ async function testDesktopJsonConfig() {
 
 async function testWebhookJsonConfig() {
   await withConfig({ webhook: { url: "https://hook.example.com/n" } }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" }, client: mockClient, $: mockShell(),
       directory: "/tmp/test", worktree: "/tmp/test",
@@ -258,7 +419,7 @@ async function testWebhookJsonConfig() {
 
 async function testCmdJsonConfig() {
   await withConfig({ cmd: "echo test" }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" }, client: mockClient, $: mockShell(),
       directory: "/tmp/test", worktree: "/tmp/test",
@@ -269,7 +430,7 @@ async function testCmdJsonConfig() {
 
 async function testMultiChannelJsonConfig() {
   await withConfig({ gotify: { url: "http://g:8080", token: "t" }, desktop: true }, async () => {
-    const mod = await import("../plugin/watch-notify.js")
+    const mod = await import("../plugin/webhook-notify.js")
     const plugin = await mod.WatchNotificationPlugin({
       project: { name: "test" }, client: mockClient, $: mockShell(),
       directory: "/tmp/test", worktree: "/tmp/test",
@@ -291,8 +452,15 @@ async function main() {
   await runTest("idle 事件", testIdleEvent)
   await runTest("会话去重", testDedup)
   await runTest("权限去重", testPermissionDedup)
+  await runTest("question 事件", testQuestionEvent)
   await runTest("任务完成文案", testTaskCompleteCopy)
   await runTest("权限申请文案", testPermissionCopy)
+  await runTest("问题通知文案", testQuestionCopy)
+  await runTest("自定义称呼/表情/签名", testCustomNickname)
+  await runTest("项目忽略名单", testIgnoreProjects)
+  await runTest("turn.duration 收集", testTurnDurationCollect)
+  await runTest("showStats 展示轮次统计", testShowStatsInIdle)
+  await runTest("showStats 默认不展示", testShowStatsDefaultFalse)
   await runTest("Gotify JSON 配置", testGotifyJsonConfig)
   await runTest("桌面通知 JSON 配置", testDesktopJsonConfig)
   await runTest("Webhook JSON 配置", testWebhookJsonConfig)

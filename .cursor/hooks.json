@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "node .cursor/hooks/notify-gotify.js",
+        "timeout": 10
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "node .cursor/hooks/notify-gotify.js",
+        "timeout": 10,
+        "matcher": "install|build|deploy|push|docker|kubectl|npm|npx|pnpm|bun"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "node .cursor/hooks/notify-gotify.js",
+        "timeout": 10,
+        "matcher": "install|build|deploy|push|docker|kubectl|npm|npx|pnpm|bun"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node .cursor/hooks/notify-gotify.js",
+        "timeout": 10,
+        "loop_limit": 3
+      }
+    ]
+  }
+}

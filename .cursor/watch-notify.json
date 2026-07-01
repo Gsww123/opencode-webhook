@@ -1,0 +1,10 @@
+{
+  "desktop": true,
+  "gotify": {
+    "url": "http://n1.030805.xyz:8385",
+    "token": "A2TtJuPxxU_ZGh2",
+    "priority": 5,
+    "title_template": "主任 {event_title}",
+    "message_template": null
+  }
+}

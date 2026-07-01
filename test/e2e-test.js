@@ -70,6 +70,7 @@ const mockClient = {
         title: "代码重构 - 优化数据库查询性能",
         createdAt: "2026-06-30T10:00:00.000Z",
         updatedAt: "2026-06-30T12:34:56.000Z",
+        model: { id: "claude-sonnet-4", providerID: "anthropic" },
       },
     }),
   },
@@ -84,7 +85,7 @@ console.log("")
 // ========= 1. 加载插件 =========
 console.log("── 步骤1: 加载插件 ──")
 
-const { WatchNotificationPlugin } = await import("../plugin/watch-notify.js")
+const { WatchNotificationPlugin } = await import("../plugin/webhook-notify.js")
 
 const plugin = await WatchNotificationPlugin({
   project: { name: "test-project" },
@@ -168,6 +169,20 @@ console.log("")
 const hasRuntime = notifyLog.includes("运行时间：")
 console.log(`  ${hasRuntime ? "✓" : "✗"} 通知包含运行时间信息`)
 if (!hasRuntime) process.exitCode = 1
+
+// 验证模型信息出现在通知中
+const hasModel = notifyLog.includes("模型：")
+console.log(`  ${hasModel ? "✓" : "✗"} 通知包含模型信息`)
+if (!hasModel) process.exitCode = 1
+
+// 验证会话名称出现在通知中（而非标题）
+const hasSessionInContent = notifyLog.includes("会话：")
+console.log(`  ${hasSessionInContent ? "✓" : "✗"} 通知包含会话名称`)
+if (!hasSessionInContent) process.exitCode = 1
+
+const titleHasSession = notifyLog.includes("任务完成：")  /* 冒号后不应跟会话名称 */
+console.log(`  ${!titleHasSession ? "✓" : "✗"} 标题不含会话名称`)
+if (titleHasSession) process.exitCode = 1
 
 console.log("")
 console.log("✓ 端到端测试通过")

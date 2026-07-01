@@ -1,7 +1,7 @@
 # Opencode Watch Notify — 插件说明
 
 ## 功能
-Opencode 任务完成或需要权限批准时，通过多种渠道推送通知。
+Opencode 任务完成、需要权限批准或需要用户回答问题/选择时，通过多种渠道推送通知。
 
 ## 配置方式
 在当前目录或 `~/.config/opencode/` 下放 `watch-notify.json`。

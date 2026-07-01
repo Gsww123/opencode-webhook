@@ -224,10 +224,80 @@ cp plugin/watch-notify.js ~/.config/opencode/plugins/
 | `$SOURCE` | 来源名称 | `opencode` |
 | `$SOURCE_LABEL` | 来源显示名 | `Opencode` |
 | `$TITLE` | 通知标题 | `Opencode 任务完成：代码重构` |
-| `$DETAILS` | 通知详情 | `项目：/home/user/project` |
+| `$DETAILS` | 通知详情 | `项目：my-project\n运行时间：5分30秒` |
 | `$RUNTIME` | 运行时间 | `5分30秒` |
 | `$SESSION_ID` | 会话 ID | `cm-xxxxx` |
 | `$TTY` | 调用者终端号 | `/dev/pts/0` |
+| `$NICKNAME` | 自定义称呼（见下文） | `主任` |
+| `$EMOJI_PREFIX` | 自定义表情前缀（见下文） | `🔔` |
+| `$SIGNATURE` | 自定义签名字（见下文） | `—— 自动通知` |
+| `$DIRECTORY` | 项目完整路径 | `/home/user/projects/my-project` |
+| `$PROJECT` | 项目名（路径最后一级） | `my-project` |
+
+---
+
+## 自定义功能
+
+在 `watch-notify.json` 顶层添加以下字段，即可定制通知内容：
+
+### 称呼 / 表情 / 签名
+
+```json
+{
+  "nickname": "主任",
+  "emojiPrefix": "🔔",
+  "signature": "—— 来自 Opencode 机器人"
+}
+```
+
+| 字段 | 效果 | 模板变量 |
+|------|------|---------|
+| `nickname` | 自动拼接到标题：`🔔 主任 Opencode 任务完成：xxx` | `$NICKNAME` |
+| `emojiPrefix` | 自动拼接到标题最前面 | `$EMOJI_PREFIX` |
+| `signature` | 自动追加到通知详情底部 | `$SIGNATURE` |
+
+**标题拼接规则**：
+```
+${emojiPrefix} ${nickname} ${label} 任务完成：${title}
+
+示例:
+🔔 主任 Opencode 任务完成：重构登录模块
+（没配 emoji）主任 Opencode 任务完成：重构登录模块
+（都没配）Opencode 任务完成：重构登录模块
+```
+
+### 项目忽略名单
+
+配置后，匹配的项目不会触发任何通知：
+
+```json
+{
+  "ignoreProjects": ["temp-test", "/mnt/e/temp"]
+}
+```
+
+匹配规则：同时支持**完整路径**和**项目名（basename）**匹配。
+
+### 轮次统计
+
+开启后，任务完成通知中会附带每轮对话的耗时统计：
+
+```json
+{
+  "showStats": true
+}
+```
+
+默认为 `false`。开启后通知示例：
+
+```text
+项目：my-project
+会话：代码重构
+运行时间：5分30秒
+轮次统计：共2轮
+第1轮：3.0s | 第2轮：5.0s
+总8.0s | 平均4.0s | 最快3.0s | 最慢5.0s
+```
 
 ---
 
@@ -239,11 +309,13 @@ cp plugin/watch-notify.js ~/.config/opencode/plugins/
 |------|----------|
 | 任务完成 | AI 执行完任务进入 idle 状态 |
 | 权限申请 | AI 需要用户批准执行命令或访问文件 |
+| 用户提问 | AI 需要用户回答问题或做出选择 |
 
-默认通知文案会区分两种状态：
+默认通知文案会区分三种状态：
 
 - 任务完成：标题以“Opencode 任务完成”开头，正文包含项目、状态和运行时间。
 - 权限申请：标题为“Opencode 需要你批准操作”，正文包含项目、权限、操作和会话。
+- 用户提问：标题为“Opencode 需要你回答问题”，正文包含项目、问题、选项和会话。
 
 **去重机制**：
 - 同一会话 5 秒内重复的 idle 事件只推送一次
@@ -273,7 +345,7 @@ opencode-watch-notify/
 ├── plugin/
 │   └── watch-notify.js       # 核心插件（单文件自包含，零外部依赖）
 └── test/
-    ├── test.js               # 单元测试（10 个用例）
+    ├── test.js               # 单元测试（12 个用例）
     └── e2e-test.js           # 端到端模拟测试
 ```
 

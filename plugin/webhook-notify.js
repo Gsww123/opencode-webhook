@@ -7,7 +7,7 @@
 
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs"
 import { execFileSync } from "node:child_process"
-import { dirname, join } from "node:path"
+import { dirname, join, basename } from "node:path"
 import { homedir } from "node:os"
 import { createConnection } from "node:net"
 import { connect as tlsConnect } from "node:tls"
@@ -18,6 +18,11 @@ import { connect as tlsConnect } from "node:tls"
 
 const DEFAULT_CONFIG = {
   notifySource: "opencode",
+  nickname: "",
+  emojiPrefix: "",
+  signature: "",
+  ignoreProjects: [],
+  showStats: false,
   hooks: {
     onTaskComplete: [
       {
@@ -31,6 +36,14 @@ const DEFAULT_CONFIG = {
       { type: "smtp",   enabled: false, host: "", port: 587, secure: false, auth: {}, from: "", to: [], subject: "$TITLE" },
     ],
     onPermissionRequest: [
+      {
+        type: "command",
+        enabled: true,
+        cmd: "/bin/sh",
+        args: ["-c", "printf '[%s] %s\\n%s\\n' \"$SOURCE\" \"$TITLE\" \"$DETAILS\" >> /tmp/opencode-notify.log"],
+      },
+    ],
+    onQuestionRequest: [
       {
         type: "command",
         enabled: true,
@@ -72,7 +85,15 @@ function loadConfig() {
     if (existsSync(p)) {
       try {
         const raw = JSON.parse(readFileSync(p, "utf-8"))
-        return { notifySource: "opencode", hooks: parseSimpleConfig(raw) }
+        return {
+          notifySource: "opencode",
+          hooks: parseSimpleConfig(raw),
+          nickname: raw.nickname || "",
+          emojiPrefix: raw.emojiPrefix || "",
+          signature: raw.signature || "",
+          ignoreProjects: raw.ignoreProjects || [],
+          showStats: raw.showStats === true,
+        }
       } catch (err) {
         devLog("[配置]", `解析失败: ${p}`, String(err))
       }
@@ -84,11 +105,12 @@ function loadConfig() {
 /* 小白傻瓜式 JSON → 内部 hooks 格式 */
 /* 支持的顶级字段: gotify, desktop, webhook, smtp, cmd */
 function parseSimpleConfig(raw) {
-  const hooks = { onTaskComplete: [], onPermissionRequest: [] }
+  const hooks = { onTaskComplete: [], onPermissionRequest: [], onQuestionRequest: [] }
 
   function add(hook) {
     hooks.onTaskComplete.push(hook)
     hooks.onPermissionRequest.push({ ...hook })
+    hooks.onQuestionRequest.push({ ...hook })
   }
 
   /* ——— Gotify ——— */
@@ -126,6 +148,12 @@ function parseSimpleConfig(raw) {
 
   devLog("[配置]", `解析完成: gotify=${!!g} desktop=${!!raw.desktop} webhook=${!!w} smtp=${!!s} cmd=${!!raw.cmd}`)
   return hooks
+}
+
+function shouldIgnore(directory, ignoreList) {
+  if (!ignoreList?.length) return false
+  const base = basename(directory)
+  return ignoreList.some(p => directory === p || base === p)
 }
 
 // ============================================================
@@ -264,7 +292,7 @@ function sendMail(host, port, secure, auth, from, message) {
 // 调度引擎
 // ============================================================
 
-async function dispatchHooks({ $, client, eventName, details, notificationTitle, runtime, sessionID, callerTTY }) {
+async function dispatchHooks({ $, client, eventName, details, notificationTitle, runtime, sessionID, callerTTY, directory }) {
   const start = Date.now()
   devLog("[事件]", { eventName, sessionID, title: notificationTitle })
 
@@ -274,7 +302,8 @@ async function dispatchHooks({ $, client, eventName, details, notificationTitle,
   devLog("[配置]", `来源=${source}`)
 
   const eventKey = eventName === "task-completed" ? "onTaskComplete"
-    : eventName === "permission-request" ? "onPermissionRequest" : null
+    : eventName === "permission-request" ? "onPermissionRequest"
+    : eventName === "question-request" ? "onQuestionRequest" : null
   if (!eventKey) { devLog("[跳过]", `未知事件: ${eventName}`); return }
 
   const hooks = config.hooks?.[eventKey]
@@ -282,7 +311,13 @@ async function dispatchHooks({ $, client, eventName, details, notificationTitle,
 
   devLog("[执行]", `事件=${eventKey} hook数量=${hooks.length}`)
 
-  const vars = { SOURCE: source, SOURCE_LABEL: label, TITLE: notificationTitle, DETAILS: details, RUNTIME: runtime || "", TTY: callerTTY || "", SESSION_ID: sessionID }
+  const vars = {
+    SOURCE: source, SOURCE_LABEL: label, TITLE: notificationTitle, DETAILS: details,
+    RUNTIME: runtime || "", TTY: callerTTY || "", SESSION_ID: sessionID,
+    NICKNAME: config.nickname || "", EMOJI_PREFIX: config.emojiPrefix || "",
+    SIGNATURE: config.signature || "",
+    DIRECTORY: directory || "", PROJECT: directory ? basename(directory) : "",
+  }
   let ok = 0, fail = 0
 
   for (const hook of hooks) {
@@ -321,6 +356,7 @@ async function dispatchHooks({ $, client, eventName, details, notificationTitle,
 const DUPLICATE_WINDOW_MS = 5000
 const lastNotificationBySession = new Map()
 const notifiedPermissions = new Set()
+const turnDurationsBySession = new Map() /* sessionID -> ms[]，记录每轮对话耗时 */
 
 function getProcessTTY() {
   try {
@@ -329,10 +365,19 @@ function getProcessTTY() {
   } catch { return "" }
 }
 
-function formatTaskTitle(title, label) {
-  const n = title?.replace(/\s+/g, " ").trim()
-  if (!n || n.startsWith("New session -")) return `${label} 任务完成`
-  return `${label} 任务完成：${n.slice(0, 100)}`
+async function getSessionName(client, sessionID, directory) {
+  try {
+    const res = await client.session.get({ path: { id: sessionID }, query: { directory } })
+    const s = res.data ?? res
+    return s?.title?.replace(/\s+/g, " ").trim() || ""
+  } catch {
+    return ""
+  }
+}
+
+function formatTaskTitle(label, nickname, emojiPrefix) {
+  const prefix = [emojiPrefix, nickname, label].filter(Boolean).join(" ")
+  return `${prefix} 任务完成`
 }
 
 function formatRuntime(startTime, endTime) {
@@ -346,21 +391,72 @@ function formatRuntime(startTime, endTime) {
   return `${seconds}秒`
 }
 
-function formatTaskDetails(directory, runtime) {
-  return [
-    `项目：${directory}`,
-    "状态：任务已完成，可以查看结果",
-    runtime && `运行时间：${runtime}`,
-  ].filter(Boolean).join("\n")
+function formatTaskDetails(directory, runtime, signature, sessionName, model, turnStats) {
+  const lines = [
+    `项目：${basename(directory)}`,
+  ]
+  if (sessionName) lines.push(`会话：${sessionName}`)
+  if (model) {
+    const modelLabel = model.variant ? `${model.id} (${model.variant})` : model.id
+    lines.push(`模型：${modelLabel}`)
+  }
+  if (runtime) lines.push(`运行时间：${runtime}`)
+  if (turnStats) lines.push(turnStats)
+  if (signature) lines.push(signature)
+  return lines.filter(Boolean).join("\n")
 }
 
-function formatPermissionDetails({ directory, sessionID, permission, pattern, title }) {
-  return [
-    `项目：${directory}`,
+function formatPermissionDetails({ directory, sessionName, permission, pattern, title }, signature) {
+  const lines = [
+    `项目：${basename(directory)}`,
     `权限：${permission || "unknown"}`,
     `操作：${pattern || title || "未提供操作详情"}`,
-    `会话：${sessionID}`,
-  ].join("\n")
+  ]
+  if (sessionName) lines.push(`会话：${sessionName}`)
+  if (signature) lines.push(signature)
+  return lines.join("\n")
+}
+
+/* 将 turn.duration 事件中的耗时值转为毫秒数 */
+function parseDurationMs(value) {
+  if (typeof value === "number") return value
+  if (typeof value === "string") {
+    const m = value.match(/^([\d.]+)/)
+    return m ? parseFloat(m[1]) * 1000 : 0
+  }
+  return 0
+}
+
+/* 格式化轮次统计信息 */
+function formatTurnStats(durations) {
+  if (!durations?.length) return ""
+  const count = durations.length
+  const total = durations.reduce((a, b) => a + b, 0)
+  const avg = total / count
+  const max = Math.max(...durations)
+  const min = Math.min(...durations)
+
+  const fmt = (ms) => ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
+
+  const lines = [`轮次统计：共${count}轮`]
+  const turns = durations.map((d, i) => `第${i + 1}轮：${fmt(d)}`)
+  lines.push(turns.join(" | "))
+  lines.push(`总${fmt(total)} | 平均${fmt(avg)} | 最快${fmt(min)} | 最慢${fmt(max)}`)
+  return lines.join("\n")
+}
+
+function formatQuestionDetails({ directory, sessionName, question, options }, signature) {
+  const lines = [
+    `项目：${basename(directory)}`,
+    `问题：${question || "未提供问题详情"}`,
+  ]
+  if (options?.length) {
+    const labels = options.map(o => typeof o === "string" ? o : o.label).filter(Boolean)
+    if (labels.length) lines.push(`选项：${labels.join(" / ")}`)
+  }
+  if (sessionName) lines.push(`会话：${sessionName}`)
+  if (signature) lines.push(signature)
+  return lines.join("\n")
 }
 
 export const WatchNotificationPlugin = async ({ project, client, $, directory, worktree }) => {
@@ -369,11 +465,56 @@ export const WatchNotificationPlugin = async ({ project, client, $, directory, w
   const iosTitle = process.env.MIMOCODE_IOS_SESSION_TITLE || process.env.OPENCODE_IOS_SESSION_TITLE || "iOS Chat"
   const processTTY = getProcessTTY()
 
+  /* 加载配置中的自定义功能 */
+  const cfg = loadConfig()
+  const nickname = cfg.nickname || ""
+  const emojiPrefix = cfg.emojiPrefix || ""
+  const signature = cfg.signature || ""
+  const ignoreList = cfg.ignoreProjects || []
+  const showStats = cfg.showStats
+
   devLog("[插件]", `初始化完成 source=${source} directory=${directory}`)
   await client.app.log({ body: { service: "watch-notify", level: "info", message: `插件已加载 (${label})` } })
 
   return {
     event: async ({ event }) => {
+      // ——— 每轮对话耗时（仅 showStats=true 时收集） ———
+      if (event.type === "turn.duration") {
+        if (showStats) {
+          const duration = event.properties?.duration
+          if (duration != null) {
+            const ms = parseDurationMs(duration)
+            if (ms > 0) {
+              const sessionID = event.properties?.sessionID || "default"
+              const list = turnDurationsBySession.get(sessionID) || []
+              list.push(ms)
+              turnDurationsBySession.set(sessionID, list)
+              devLog("[耗时]", `session=${sessionID} 耗时=${ms}ms`)
+            }
+          }
+        }
+        return
+      }
+
+      if (shouldIgnore(directory, ignoreList)) return
+
+      // ——— 用户提问 ———
+      if (event.type === "question.asked") {
+        const p = event.properties
+        const sessionName = await getSessionName(client, p.sessionID, directory)
+        const questionInfo = p.questions?.[0]
+        const details = formatQuestionDetails({
+          directory,
+          sessionName,
+          question: questionInfo?.question ?? p.question ?? p.text ?? "",
+          options: questionInfo?.options ?? p.options,
+        }, signature)
+
+        const qPrefix = [emojiPrefix, nickname, label].filter(Boolean).join(" ")
+        await dispatchHooks({ $, client, eventName: "question-request", details, directory, notificationTitle: `${qPrefix} 需要你回答问题`, sessionID: p.sessionID, callerTTY: "" })
+        return
+      }
+
       // ——— 权限申请 ———
       if (event.type === "permission.asked" || event.type === "permission.updated") {
         const p = event.properties
@@ -382,15 +523,17 @@ export const WatchNotificationPlugin = async ({ project, client, $, directory, w
         if (pid) notifiedPermissions.add(pid)
 
         const pattern = Array.isArray(p.patterns ?? p.pattern) ? (p.patterns ?? p.pattern).join(", ") : (p.patterns ?? p.pattern ?? "")
+        const sessionName = await getSessionName(client, p.sessionID, directory)
         const details = formatPermissionDetails({
           directory,
-          sessionID: p.sessionID,
+          sessionName,
           permission: p.permission ?? p.type ?? "unknown",
           pattern,
           title: p.title,
-        })
+        }, signature)
 
-        await dispatchHooks({ $, client, eventName: "permission-request", details, notificationTitle: `${label} 需要你批准操作`, sessionID: p.sessionID, callerTTY: "" })
+        const permPrefix = [emojiPrefix, nickname, label].filter(Boolean).join(" ")
+        await dispatchHooks({ $, client, eventName: "permission-request", details, directory, notificationTitle: `${permPrefix} 需要你批准操作`, sessionID: p.sessionID, callerTTY: "" })
         return
       }
 
@@ -403,22 +546,35 @@ export const WatchNotificationPlugin = async ({ project, client, $, directory, w
       if (now - (lastNotificationBySession.get(sessionID) ?? 0) < DUPLICATE_WINDOW_MS) return
       lastNotificationBySession.set(sessionID, now)
 
-      let title = `${label} 任务完成`
+      let title = formatTaskTitle(label, nickname, emojiPrefix)
       let runtime = null
+      let sessionName = ""
+      let model = null
 
       try {
         const res = await client.session.get({ path: { id: sessionID }, query: { directory } })
         const s = res.data ?? res
         if (s?.title === iosTitle) return
         if (s?.parentID) return  /* 子代理 session 有 parentID，跳过通知，只由主 agent 触发 */
-        title = formatTaskTitle(s?.title, label)
         if (s?.createdAt && s?.updatedAt) {
           runtime = formatRuntime(new Date(s.createdAt).getTime(), new Date(s.updatedAt).getTime())
         }
+        sessionName = s?.title?.replace(/\s+/g, " ").trim() || ""
+        model = s?.model || null
       } catch { /* 不阻塞通知 */ }
 
-      const details = formatTaskDetails(directory, runtime)
-      await dispatchHooks({ $, client, eventName: "task-completed", details, notificationTitle: title, runtime, sessionID, callerTTY: processTTY })
+      /* 收集轮次统计 */
+      let turnStats = ""
+      if (showStats) {
+        const durations = turnDurationsBySession.get(sessionID)
+        if (durations?.length) {
+          turnStats = formatTurnStats(durations)
+          turnDurationsBySession.delete(sessionID)
+        }
+      }
+
+      const details = formatTaskDetails(directory, runtime, signature, sessionName, model, turnStats)
+      await dispatchHooks({ $, client, eventName: "task-completed", details, directory, notificationTitle: title, runtime, sessionID, callerTTY: processTTY })
     },
   }
 }
